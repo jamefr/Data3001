@@ -1,12 +1,29 @@
 #!/usr/bin/env python3
 
 import pandas as pd
+import os
+import re
+import seaborn as sns
 import numpy as np
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import GridSearchCV
+import matplotlib.pyplot as plt
+from pyspark.sql import SparkSession
 from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import LabelEncoder
+from sklearn.model_selection import GridSearchCV
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import SelectFromModel
 
+# My homemade overall accuracy scorer
+def overallAccuracy(res1, y_test):
+    count = 0
+    total = 0
+    for k in res1:
+        if k == y_test[total]:
+            count +=1
+        total += 1
 
+# Homemade class-by-class accuracy
 def classByClassAccuracy(predictions, actual):
     ind = 0
     classes = {}
@@ -29,73 +46,98 @@ def classByClassAccuracy(predictions, actual):
 
     return dict(sorted(results.items(), key=lambda x:x[1], reverse=True))
 
-# Converting Variables into category
-train_df = pd.read_json('train_df_37.json', lines=True)
-train_df = train_df.replace(np.nan, 0)
-test_df = pd.read_json('test_df_week2.json', lines=True)
+spark = SparkSession.builder.appName("forest").master("local").getOrCreate()
 
-columns_to_remove = ["flowStartMilliseconds", "flowEndMilliseconds",'firstEightNonEmptyPacketDirections', 'destinationTransportPort']
-for regressors in columns_to_remove:
-    if regressors in train_df.columns:
-        train_df = train_df.drop(columns=regressors)
-        test_df = test_df.drop(columns=regressors)
+# training = spark.read.json("training_mouse_computer_room_hub.json").toPandas()
+# for file in os.listdir(f"/Users/james/Desktop/DATA3001/Clean_Data"):
+#     if re.search("^training", file):
+#         print(f"concatenated {file}!")
+#         tmp = spark.read.json(file).toPandas()
+#         training = pd.concat(objs=[training, tmp])
 
-columns_categorical = ["flowAttributes", "protocolIdentifier", "ipClassOfService", "flowEndReason", 'reverseFlowAttributes']
+# test = spark.read.json("test_mouse_computer_room_hub.json").toPandas()
+# for file in os.listdir(f"/Users/james/Desktop/DATA3001/Clean_Data"):
+#     if re.search("^test", file):
+#         print(f"concatenated {file}!")
+#         tmp = spark.read.json(file).toPandas()
+#         test = pd.concat(objs=[test, tmp])
 
-for regressors in columns_categorical:
-    train_df = pd.get_dummies(train_df, columns=[regressors], prefix=regressors)
-    test_df = pd.get_dummies(test_df, columns=[regressors], prefix=regressors)
+training = spark.read.json("training_james_5000.json").toPandas()
+test = spark.read.json("test_james_5000.json").toPandas()
+spark.stop()
 
-for regressors in test_df.columns:
-    if regressors not in train_df.columns:
-         test_df = test_df.drop(columns=regressors)
+# Pop off stop and start times - these are only included for human use
+training.pop("flowEndMilliseconds")
+training.pop("flowStartMilliseconds")
+test.pop("flowEndMilliseconds")
+test.pop("flowStartMilliseconds")
 
-# Manually
-category = ['ipClassOfService_0xd0']
-for regressors in category:
-    if regressors in train_df.columns:
-        train_df = train_df.drop(columns=regressors)
-    if regressors in test_df.columns:
-        test_df = test_df.drop(columns=regressors)
+# Temp fix
+training.pop("firstEightNonEmptyPacketDirections")
+test.pop("firstEightNonEmptyPacketDirections")
+
+# Separate the response columns and encode the labels
+y_train = training.pop("response")
+y_test = test.pop("response")
+
+# Create interaction between ipclassofservice and protocolidentifier
+
+# Create Relevant Dummies
+training = pd.get_dummies(training, drop_first=True, columns=["protocolIdentifier"], prefix="protocolIdentifier")
+# training = pd.get_dummies(training, columns=["firstEightNonEmptyPacketDirections"], prefix="firstEightNonEmptyPacketDirections")
+training = pd.get_dummies(training, drop_first=True, columns=["ipClassOfService"], prefix="ipClassOfService")
+training = pd.get_dummies(training, drop_first=True, columns=["flowEndReason"], prefix="flowEndReason")
+training = pd.get_dummies(training, drop_first=True, columns=["flowAttributes"], prefix="flowAttributes")
+
+test = pd.get_dummies(test, drop_first=True, columns=["protocolIdentifier"], prefix="protocolIdentifier")
+# test = pd.get_dummies(test, columns=["firstEightNonEmptyPacketDirections"], prefix="firstEightNonEmptyPacketDirections")
+test = pd.get_dummies(test, drop_first=True, columns=["ipClassOfService"], prefix="ipClassOfService")
+test = pd.get_dummies(test, drop_first=True, columns=["flowEndReason"], prefix="flowEndReason")
+test = pd.get_dummies(test, drop_first=True, columns=["flowAttributes"], prefix="flowAttributes")
+
+# test = test.sample(frac=0.25, random_state=69)
+# test.pop("flowEndReason_eof")
+# test.pop("ipClassOfService_0x02")
+training.pop("flowAttributes_0a")
+# training.pop("ipClassOfService_0xd0")
+training.pop("protocolIdentifier_2")
+
+print(training.info())
 
 
-response = ['response']
-predictors = [x for x in list(train_df.columns) if x not in response]
+# corr_matrix = training.corr()
+# plt.figure(figsize=(10,10))
+# sns.heatmap(corr_matrix, cmap='Blues', annot=True, linecolor='white', linewidth=1)
+# plt.show()
 
-# predictors.remove('ipClassOfService_4')
-X = train_df[predictors]
-y = np.ravel(train_df[response])
-X_test = test_df[predictors]
-y_test = np.ravel(test_df[response])
-forest1 = RandomForestClassifier(criterion='entropy', bootstrap=True)
+# parameters = {"n_estimators":[100,500]}
+# tmp = RandomForestClassifier()
+# clf = GridSearchCV(tmp, parameters)
+# clf = clf.fit(training, y_train)
 
-param_grid2 = [{"n_estimators" : [200,400]}, {"class_weight" : ["balanced_subsample", "balanced"]}]
-forestSearch = GridSearchCV(forest1, param_grid=param_grid2, scoring='accuracy', cv=3, verbose=1, n_jobs=-1)
+# Create the random forest model
+forest1 = RandomForestClassifier(n_estimators=200, criterion="entropy", random_state=69)
+forest1 = forest1.fit(training, y_train)
+res1 = forest1.predict(test)
+accuracies1 = accuracy_score(y_test, res1)
 
-forestFit = forestSearch.fit(X,y)
-best_forest = forestFit.best_estimator_
+forest2 = ExtraTreesClassifier(n_estimators=200, criterion="entropy", random_state=69)
+forest2 = forest2.fit(training, y_train)
+res2 = forest2.predict(test)
+accuracies2 = accuracy_score(y_test, res2)
 
-y_pred = best_forest.predict(X_test)
+results1 = classByClassAccuracy(res1, y_test)
+results2 = classByClassAccuracy(res2, y_test)
 
-print(accuracy_score(y_test, y_pred))
+print(f"OVERALL ACCURACY\nRF: {accuracies1*100:.6f}\nET: {accuracies2*100:.6f}\n")
 
-# Use threshold to increase precision
-# y_test_arr = np.ravel(y_test)
-# probabilities = best_forest.predict_proba(X_test)
+print("RANDOM FOREST CLASS BY CLASS ACCURACY")
+for k,v in results1.items():
+    print(f"class: {k : <40} accuracy: {v:.3%}")
 
-# prob = pd.DataFrame(probabilities)
-# mean_prob = np.ravel(prob.mean(axis=0))
-# std_deviation = np.ravel(prob.std(axis=0))
-# mean_reduced_prob = (probabilities - mean_prob) / std_deviation
+print("\nEXTRA TREES CLASS BY CLASS ACCURACY")
+for k,v in results2.items():
+    print(f"class: {k : <40} accuracy: {v:.3%}")
 
-# z_score = (0.35 - mean_prob) / std_deviation
-# threshold = mean_reduced_prob > z_score
-# predictions = np.full((probabilities.shape[0],), -1)
-# for i, instance in enumerate(threshold):
-#     # Check if any probability meets the threshold
-#     if any(instance):
-#         # Get the index of the max probability above the threshold
-#         predictions[i] = np.argmax(mean_reduced_prob[i])
+print(f"UNIQUE VALUE COUNTS IN Y_PRED")
 
-# accuracy = classByClassAccuracy(predictions, y_test_arr)
-# print(predictions)
